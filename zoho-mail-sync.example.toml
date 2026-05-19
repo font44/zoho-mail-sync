@@ -1,0 +1,9 @@
+# See https://www.zoho.com/mail/help/api/getting-started-with-api.html
+
+client_id     = "1000.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+client_secret = "0123456789abcdef0123456789abcdef0123456789"
+
+# accounts_url = "https://accounts.zoho.com"
+# api_url      = "https://mail.zoho.com"
+
+# data_dir = "/home/me/Mail"
