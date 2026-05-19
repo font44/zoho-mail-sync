@@ -76,7 +76,7 @@ impl Client {
             .with_context(|| format!("parsing JSON from {url}"))
     }
 
-    pub async fn get_bytes(&self, url: &str) -> Result<bytes::Bytes> {
+    pub async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
         let _permit = self
             .semaphore
             .clone()
@@ -125,7 +125,7 @@ impl Client {
 }
 
 enum ResponseOutcome {
-    Ok(bytes::Bytes),
+    Ok(Vec<u8>),
     Unauthorized,
     Retry { delay: Option<Duration> },
     Fatal(anyhow::Error),
@@ -137,7 +137,7 @@ async fn handle_response(resp: reqwest::Result<Response>) -> ResponseOutcome {
             let status = r.status();
             if status.is_success() {
                 match r.bytes().await {
-                    Ok(b) => ResponseOutcome::Ok(b),
+                    Ok(b) => ResponseOutcome::Ok(b.to_vec()),
                     Err(e) => ResponseOutcome::Fatal(anyhow!("reading body: {e}")),
                 }
             } else if status == StatusCode::UNAUTHORIZED {
