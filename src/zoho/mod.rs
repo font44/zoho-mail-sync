@@ -17,12 +17,6 @@ use tokio::sync::{Mutex, Semaphore};
 use crate::config::ResolvedConfig;
 use crate::oauth;
 
-const MAX_CONCURRENT: usize = 8;
-const RATE_LIMIT_RPS: u32 = 10;
-const RATE_LIMIT_BURST: u32 = 20;
-const MAX_RETRIES: u32 = 5;
-const BASE_BACKOFF_MS: u64 = 250;
-
 type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
 pub struct Client {
@@ -31,6 +25,8 @@ pub struct Client {
     access_token: Mutex<String>,
     semaphore: Arc<Semaphore>,
     rate_limiter: Arc<DirectLimiter>,
+    max_retries: u32,
+    base_backoff_ms: u64,
 }
 
 impl Client {
@@ -41,19 +37,31 @@ impl Client {
             .build()
             .context("building HTTP client")?;
         let access_token = oauth::fetch_access_token(&cfg, &http).await?;
-        let quota = Quota::per_second(NonZeroU32::new(RATE_LIMIT_RPS).unwrap())
-            .allow_burst(NonZeroU32::new(RATE_LIMIT_BURST).unwrap());
+        let rps = NonZeroU32::new(cfg.concurrency.rate_limit_rps.max(1))
+            .expect("rate_limit_rps clamped to >=1");
+        let burst = NonZeroU32::new(cfg.concurrency.rate_limit_burst.max(1))
+            .expect("rate_limit_burst clamped to >=1");
+        let quota = Quota::per_second(rps).allow_burst(burst);
+        let max_concurrent = cfg.concurrency.max_concurrent.max(1);
+        let max_retries = cfg.concurrency.max_retries;
+        let base_backoff_ms = cfg.concurrency.base_backoff_ms;
         Ok(Client {
             cfg,
             http,
             access_token: Mutex::new(access_token),
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT)),
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
             rate_limiter: Arc::new(RateLimiter::direct(quota)),
+            max_retries,
+            base_backoff_ms,
         })
     }
 
     pub fn api_base(&self) -> String {
         format!("{}/api", self.cfg.api_host())
+    }
+
+    pub fn page_limit(&self) -> u32 {
+        self.cfg.concurrency.page_limit
     }
 
     async fn rate_limit(&self) {
@@ -110,10 +118,10 @@ impl Client {
                     continue;
                 }
                 ResponseOutcome::Retry { delay } => {
-                    if attempt >= MAX_RETRIES {
+                    if attempt >= self.max_retries {
                         return Err(anyhow!("retry limit hit for {url}"));
                     }
-                    let wait = delay.unwrap_or_else(|| backoff_for(attempt));
+                    let wait = delay.unwrap_or_else(|| backoff_for(self.base_backoff_ms, attempt));
                     tracing::warn!("retrying {url} after {:?} (attempt {})", wait, attempt + 1);
                     tokio::time::sleep(wait).await;
                     attempt += 1;
@@ -161,7 +169,7 @@ async fn handle_response(resp: reqwest::Result<Response>) -> ResponseOutcome {
     }
 }
 
-fn backoff_for(attempt: u32) -> Duration {
-    let ms = BASE_BACKOFF_MS.saturating_mul(1 << attempt.min(5));
+fn backoff_for(base_ms: u64, attempt: u32) -> Duration {
+    let ms = base_ms.saturating_mul(1 << attempt.min(5));
     Duration::from_millis(ms)
 }

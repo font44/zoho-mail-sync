@@ -14,8 +14,6 @@ use crate::zoho::{
     Client,
 };
 
-const FETCH_PARALLELISM: usize = 8;
-
 pub async fn run(cfg: ResolvedConfig) -> Result<()> {
     state::ensure_state_dir(&cfg.state_dir())?;
     let client = Arc::new(Client::new(cfg.clone()).await?);
@@ -108,7 +106,14 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
 
     apply_flag_changes(&cfg.data_dir, &to_set_flags)?;
     apply_moves(&cfg.data_dir, &to_move)?;
-    apply_fetches(client.clone(), &account_id, &cfg.data_dir, &to_fetch).await?;
+    apply_fetches(
+        client.clone(),
+        &account_id,
+        &cfg.data_dir,
+        cfg.concurrency.fetch_parallelism,
+        &to_fetch,
+    )
+    .await?;
     apply_deletes(&cfg.data_dir, &to_delete)?;
 
     meta.last_sync_unix = Some(unix_now());
@@ -166,11 +171,13 @@ async fn apply_fetches(
     client: Arc<Client>,
     account_id: &str,
     data_dir: &std::path::Path,
+    parallelism: usize,
     items: &[(String, String, Flags)],
 ) -> Result<()> {
     if items.is_empty() {
         return Ok(());
     }
+    let parallelism = parallelism.max(1);
     let pb = indicatif::ProgressBar::new(items.len() as u64);
     pb.set_style(
         indicatif::ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}")
@@ -183,7 +190,7 @@ async fn apply_fetches(
     let mut errors: Vec<anyhow::Error> = Vec::new();
 
     loop {
-        while in_flight < FETCH_PARALLELISM {
+        while in_flight < parallelism {
             match iter.next() {
                 Some((mid, maildir_name, flags)) => {
                     let client = client.clone();

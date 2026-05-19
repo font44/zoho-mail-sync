@@ -1,9 +1,7 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 
 use super::Client;
-
-const PAGE_LIMIT: u32 = 200;
 
 #[derive(Debug, Deserialize)]
 struct MessagesEnvelope {
@@ -38,9 +36,10 @@ pub async fn list_folder_messages(
 ) -> Result<Vec<RemoteMessage>> {
     let mut out = Vec::new();
     let mut start: u32 = 1;
+    let page_limit = client.page_limit().max(1);
     loop {
         let url = format!(
-            "{}/accounts/{account_id}/messages/view?folderId={folder_id}&start={start}&limit={PAGE_LIMIT}&sortBy=date&sortorder=false",
+            "{}/accounts/{account_id}/messages/view?folderId={folder_id}&start={start}&limit={page_limit}&sortBy=date&sortorder=false",
             client.api_base()
         );
         let env: MessagesEnvelope = client
@@ -75,11 +74,11 @@ pub async fn list_folder_messages(
                 important,
             });
         }
-        if len < PAGE_LIMIT as usize {
+        if len < page_limit as usize {
             break;
         }
         start = start
-            .checked_add(PAGE_LIMIT)
+            .checked_add(page_limit)
             .ok_or_else(|| anyhow!("paging overflow"))?;
     }
     Ok(out)

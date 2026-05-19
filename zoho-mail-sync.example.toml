@@ -1,9 +1,16 @@
 # See https://www.zoho.com/mail/help/api/getting-started-with-api.html
+# Set ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET in the environment.
 
-client_id     = "1000.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-client_secret = "0123456789abcdef0123456789abcdef0123456789"
+# data_dir = "/home/me/Mail"
 
 # accounts_url = "https://accounts.zoho.com"
 # api_url      = "https://mail.zoho.com"
 
-# data_dir = "/home/me/Mail"
+# [concurrency]
+# fetch_parallelism = 8     # parallel message-body downloads during sync
+# max_concurrent    = 8     # max in-flight Zoho API requests
+# rate_limit_rps    = 10    # token-bucket steady-state requests/sec
+# rate_limit_burst  = 20    # token-bucket burst size
+# max_retries       = 5     # retries on 429 / 5xx / transport errors
+# base_backoff_ms   = 250   # exponential backoff base, doubled per attempt
+# page_limit        = 200   # message list page size

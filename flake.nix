@@ -10,6 +10,21 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+        package = pkgs.rustPlatform.buildRustPackage {
+          pname = "zoho-mail-sync";
+          version = "0.1.0";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.openssl ];
+          meta = {
+            description = "One-way Maildir mirror of a Zoho Mail account";
+            homepage = "https://github.com/vijayvar/zoho-mail-sync";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "zoho-mail-sync";
+            platforms = pkgs.lib.platforms.unix;
+          };
+        };
       in {
         devShells.default = pkgs.mkShell {
           packages = [
@@ -24,13 +39,11 @@
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
         };
 
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "zoho-mail-sync";
-          version = "0.1.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ];
+        packages.default = package;
+
+        apps.default = {
+          type = "app";
+          program = "${package}/bin/zoho-mail-sync";
         };
       });
 }
