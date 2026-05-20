@@ -7,9 +7,9 @@
 # api_url      = "https://mail.zoho.com"
 
 # [concurrency]
-# max_concurrent    = 8     # max in-flight Zoho API requests
-# rate_limit_rps    = 10    # token-bucket steady-state requests/sec
-# rate_limit_burst  = 20    # token-bucket burst size
-# max_retries       = 5     # retries on 429 / 5xx / transport errors
-# base_backoff_ms   = 250   # exponential backoff base, doubled per attempt
-# page_limit        = 200   # message list page size
+# max_concurrent_requests              = 8     # max in-flight Zoho HTTP requests
+# num_folders_to_process_concurrently  = 100   # folder-list fan-out width
+# rate_limit_rps                       = 10    # token-bucket steady-state requests/sec
+# max_retries                          = 2     # additional attempts after the first failure
+# base_backoff_ms                      = 250   # exponential backoff base, doubled per attempt
+# message_list_page_size               = 200   # page size for /messages/view

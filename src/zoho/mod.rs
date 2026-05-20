@@ -20,14 +20,14 @@ use crate::oauth;
 
 type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
-const TOKEN_REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const ACCESS_TOKEN_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub struct Client {
     cfg: ResolvedConfig,
     http: reqwest::Client,
     access_token: Arc<Mutex<String>>,
-    semaphore: Arc<Semaphore>,
-    rate_limiter: Arc<DirectLimiter>,
+    semaphore: Semaphore,
+    rate_limiter: DirectLimiter,
     max_retries: u32,
     base_backoff_ms: u64,
 }
@@ -44,10 +44,8 @@ impl Client {
         ));
         let rps = NonZeroU32::new(cfg.concurrency.rate_limit_rps.max(1))
             .expect("rate_limit_rps clamped to >=1");
-        let burst = NonZeroU32::new(cfg.concurrency.rate_limit_burst.max(1))
-            .expect("rate_limit_burst clamped to >=1");
-        let quota = Quota::per_second(rps).allow_burst(burst);
-        let max_concurrent = cfg.concurrency.max_concurrent.max(1);
+        let quota = Quota::per_second(rps);
+        let max_concurrent_requests = cfg.concurrency.max_concurrent_requests.max(1);
         let max_retries = cfg.concurrency.max_retries;
         let base_backoff_ms = cfg.concurrency.base_backoff_ms;
 
@@ -57,8 +55,8 @@ impl Client {
             cfg,
             http,
             access_token,
-            semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            rate_limiter: Arc::new(RateLimiter::direct(quota)),
+            semaphore: Semaphore::new(max_concurrent_requests),
+            rate_limiter: RateLimiter::direct(quota),
             max_retries,
             base_backoff_ms,
         })
@@ -68,12 +66,12 @@ impl Client {
         self.cfg.api_base()
     }
 
-    pub fn page_limit(&self) -> u32 {
-        self.cfg.concurrency.page_limit
+    pub fn message_list_page_size(&self) -> u32 {
+        self.cfg.concurrency.message_list_page_size
     }
 
-    pub fn max_concurrent(&self) -> usize {
-        self.cfg.concurrency.max_concurrent.max(1)
+    pub fn num_folders_to_process_concurrently(&self) -> usize {
+        self.cfg.concurrency.num_folders_to_process_concurrently.max(1)
     }
 
     async fn rate_limit(&self) {
@@ -90,24 +88,22 @@ impl Client {
     }
 
     pub async fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
-        let _permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .context("semaphore")?;
         let mut attempt: u32 = 0;
         loop {
-            self.rate_limit().await;
-            let token = self.current_token().await;
-            let resp = self
-                .http
-                .request(Method::GET, url)
-                .header("Authorization", format!("Zoho-oauthtoken {token}"))
-                .header("Accept", "application/json")
-                .send()
-                .await;
-            match handle_response(resp).await {
+            let outcome = {
+                let _permit = self.semaphore.acquire().await.context("semaphore")?;
+                self.rate_limit().await;
+                let token = self.current_token().await;
+                let resp = self
+                    .http
+                    .request(Method::GET, url)
+                    .header("Authorization", format!("Zoho-oauthtoken {token}"))
+                    .header("Accept", "application/json")
+                    .send()
+                    .await;
+                handle_response(resp).await
+            };
+            match outcome {
                 ResponseOutcome::Ok(body) => return Ok(body),
                 ResponseOutcome::Retry { delay } => {
                     if attempt >= self.max_retries {
@@ -130,7 +126,7 @@ fn spawn_refresher(
     access_token: Arc<Mutex<String>>,
 ) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(TOKEN_REFRESH_INTERVAL);
+        let mut tick = tokio::time::interval(ACCESS_TOKEN_REFRESH_INTERVAL);
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -167,12 +163,20 @@ async fn handle_response(resp: reqwest::Result<Response>) -> ResponseOutcome {
                     "401 from {url}: background token refresher must have failed (body: {body})"
                 ))
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                let delay = r
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .map(Duration::from_secs);
+                let url = r.url().clone();
+                let delay = match r.headers().get("retry-after") {
+                    None => None,
+                    Some(v) => match v.to_str().ok().and_then(|s| s.parse::<u64>().ok()) {
+                        Some(n) => Some(Duration::from_secs(n)),
+                        None => {
+                            let raw = v.to_str().unwrap_or("<non-utf8>").to_string();
+                            return ResponseOutcome::Fatal(anyhow!(
+                                "unsupported Retry-After header value {raw:?} from {url}: \
+                                 only integer-seconds form is supported"
+                            ));
+                        }
+                    },
+                };
                 ResponseOutcome::Retry { delay }
             } else {
                 let url = r.url().clone();

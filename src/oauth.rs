@@ -77,8 +77,7 @@ pub async fn run_auth(cfg: &ResolvedConfig, code_arg: Option<&str>) -> Result<()
     let tokens = Tokens { refresh_token };
     ensure_state_dir(&cfg.state_dir())?;
     save_tokens(&cfg.state_dir(), &tokens)?;
-    println!();
-    println!("Saved refresh token to {}", cfg.state_dir().join("tokens.json").display());
+    tracing::info!(path = %cfg.state_dir().join("tokens.json").display(), "saved refresh token");
     Ok(())
 }
 

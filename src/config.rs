@@ -19,29 +19,29 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Concurrency {
-    #[serde(default = "default_max_concurrent")]
-    pub max_concurrent: usize,
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+    #[serde(default = "default_num_folders_to_process_concurrently")]
+    pub num_folders_to_process_concurrently: usize,
     #[serde(default = "default_rate_limit_rps")]
     pub rate_limit_rps: u32,
-    #[serde(default = "default_rate_limit_burst")]
-    pub rate_limit_burst: u32,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     #[serde(default = "default_base_backoff_ms")]
     pub base_backoff_ms: u64,
-    #[serde(default = "default_page_limit")]
-    pub page_limit: u32,
+    #[serde(default = "default_message_list_page_size")]
+    pub message_list_page_size: u32,
 }
 
 impl Default for Concurrency {
     fn default() -> Self {
         Self {
-            max_concurrent: default_max_concurrent(),
+            max_concurrent_requests: default_max_concurrent_requests(),
+            num_folders_to_process_concurrently: default_num_folders_to_process_concurrently(),
             rate_limit_rps: default_rate_limit_rps(),
-            rate_limit_burst: default_rate_limit_burst(),
             max_retries: default_max_retries(),
             base_backoff_ms: default_base_backoff_ms(),
-            page_limit: default_page_limit(),
+            message_list_page_size: default_message_list_page_size(),
         }
     }
 }
@@ -52,22 +52,22 @@ fn default_accounts_url() -> String {
 fn default_api_url() -> String {
     "https://mail.zoho.com".to_string()
 }
-fn default_max_concurrent() -> usize {
+fn default_max_concurrent_requests() -> usize {
     8
+}
+fn default_num_folders_to_process_concurrently() -> usize {
+    100
 }
 fn default_rate_limit_rps() -> u32 {
     10
 }
-fn default_rate_limit_burst() -> u32 {
-    20
-}
 fn default_max_retries() -> u32 {
-    5
+    2
 }
 fn default_base_backoff_ms() -> u64 {
     250
 }
-fn default_page_limit() -> u32 {
+fn default_message_list_page_size() -> u32 {
     200
 }
 

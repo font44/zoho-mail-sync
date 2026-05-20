@@ -22,14 +22,37 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
 
     let folders = list_folders(&client, &account_id).await?;
     tracing::info!(count = folders.len(), "listed remote folders");
-    for f in &folders {
-        maildir::ensure_folder(&cfg.data_dir, &f.maildir_name)?;
+    {
+        let data_dir = cfg.data_dir.clone();
+        let folders_clone = folders.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for f in &folders_clone {
+                maildir::ensure_folder(&data_dir, &f.maildir_name)?;
+            }
+            Ok(())
+        })
+        .await
+        .context("ensure_folder task panicked")??;
     }
 
-    let local = maildir::scan_data_dir(&cfg.data_dir)?;
+    let local = {
+        let data_dir = cfg.data_dir.clone();
+        tokio::task::spawn_blocking(move || maildir::scan_data_dir(&data_dir))
+            .await
+            .context("scan_data_dir task panicked")??
+    };
     tracing::info!(count = local.len(), "scanned local maildir");
 
-    let remote = enumerate_remote(&client, &account_id, &folders).await?;
+    let (remote, enum_errors) = enumerate_remote(&client, &account_id, &folders).await;
+    if !enum_errors.is_empty() {
+        for e in &enum_errors {
+            tracing::error!("{e:#}");
+        }
+        anyhow::bail!(
+            "{} folder enumeration(s) failed; refusing to diff against partial remote state",
+            enum_errors.len()
+        );
+    }
     tracing::info!(count = remote.len(), "enumerated remote messages");
 
     let folder_id_to_maildir: HashMap<String, String> = folders
@@ -37,47 +60,12 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
         .map(|f| (f.folder_id.clone(), f.maildir_name.clone()))
         .collect();
 
-    let mut errors: Vec<anyhow::Error> = Vec::new();
-    let mut to_fetch: Vec<(String, String, Flags)> = Vec::new();
-
-    for (mid, rmsg) in &remote {
-        let target = match folder_id_to_maildir.get(&rmsg.folder_id) {
-            Some(n) => n.clone(),
-            None => {
-                tracing::warn!(
-                    folder_id = %rmsg.folder_id,
-                    message_id = %mid,
-                    "remote message in unknown folder; skipping"
-                );
-                continue;
-            }
-        };
-        let flags = flags_from_remote(rmsg);
-        match local.get(mid) {
-            None => to_fetch.push((mid.clone(), target, flags)),
-            Some(le) if le.maildir_name != target => {
-                if let Err(e) =
-                    maildir::move_to_folder(&cfg.data_dir, &le.maildir_name, &target, mid, flags)
-                {
-                    errors.push(e);
-                }
-            }
-            Some(le) if le.flags != flags => {
-                if let Err(e) = maildir::set_flags(&cfg.data_dir, &target, mid, flags) {
-                    errors.push(e);
-                }
-            }
-            Some(_) => {}
-        }
-    }
-
-    for (mid, le) in &local {
-        if !remote.contains_key(mid)
-            && let Err(e) = maildir::delete(&cfg.data_dir, &le.maildir_name, mid)
-        {
-            errors.push(e);
-        }
-    }
+    let (to_fetch, mut errors) = {
+        let data_dir = cfg.data_dir.clone();
+        tokio::task::spawn_blocking(move || diff_local_remote(&data_dir, &remote, &local, &folder_id_to_maildir))
+            .await
+            .context("diff task panicked")?
+    };
 
     let fetch_count = to_fetch.len();
     tracing::info!(new = fetch_count, "starting fetches");
@@ -85,7 +73,13 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
     let fetch_failed = fetch_errors.len();
     errors.extend(fetch_errors);
 
-    let stale_errors = cleanup_stale_dirs(&cfg.data_dir, &folders)?;
+    let stale_errors = {
+        let data_dir = cfg.data_dir.clone();
+        let folders_clone = folders.clone();
+        tokio::task::spawn_blocking(move || cleanup_stale_dirs(&data_dir, &folders_clone))
+            .await
+            .context("cleanup_stale_dirs task panicked")??
+    };
     let stale_failed = stale_errors.len();
     errors.extend(stale_errors);
 
@@ -105,6 +99,57 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
     }
     tracing::info!("sync complete");
     Ok(())
+}
+
+fn diff_local_remote(
+    data_dir: &std::path::Path,
+    remote: &HashMap<String, RemoteMessage>,
+    local: &HashMap<String, crate::maildir::LocalEntry>,
+    folder_id_to_maildir: &HashMap<String, String>,
+) -> (Vec<(String, String, Flags)>, Vec<anyhow::Error>) {
+    let mut errors: Vec<anyhow::Error> = Vec::new();
+    let mut to_fetch: Vec<(String, String, Flags)> = Vec::new();
+
+    for (mid, rmsg) in remote {
+        let target = match folder_id_to_maildir.get(&rmsg.folder_id) {
+            Some(n) => n.clone(),
+            None => {
+                tracing::warn!(
+                    folder_id = %rmsg.folder_id,
+                    message_id = %mid,
+                    "remote message in unknown folder; skipping"
+                );
+                continue;
+            }
+        };
+        let flags = flags_from_remote(rmsg);
+        match local.get(mid) {
+            None => to_fetch.push((mid.clone(), target, flags)),
+            Some(le) if le.maildir_name != target => {
+                if let Err(e) =
+                    maildir::move_to_folder(data_dir, &le.maildir_name, &target, mid, flags)
+                {
+                    errors.push(e);
+                }
+            }
+            Some(le) if le.flags != flags => {
+                if let Err(e) = maildir::set_flags(data_dir, &target, mid, flags) {
+                    errors.push(e);
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    for (mid, le) in local {
+        if !remote.contains_key(mid)
+            && let Err(e) = maildir::delete(data_dir, &le.maildir_name, mid)
+        {
+            errors.push(e);
+        }
+    }
+
+    (to_fetch, errors)
 }
 
 async fn resolve_account_id(
@@ -136,14 +181,18 @@ async fn enumerate_remote(
     client: &Arc<Client>,
     account_id: &str,
     folders: &[Folder],
-) -> Result<HashMap<String, RemoteMessage>> {
-    let parallelism = client.max_concurrent();
+) -> (HashMap<String, RemoteMessage>, Vec<anyhow::Error>) {
+    let parallelism = client.num_folders_to_process_concurrently();
     let stream = futures::stream::iter(folders.iter().map(|f| {
         let client = client.clone();
         let account_id = account_id.to_string();
+        let maildir_name = f.maildir_name.clone();
+        let folder_id = f.folder_id.clone();
         async move {
-            let msgs = list_folder_messages(&client, &account_id, &f.folder_id).await?;
-            tracing::info!(folder = %f.maildir_name, count = msgs.len(), "enumerated folder");
+            let msgs = list_folder_messages(&client, &account_id, &folder_id)
+                .await
+                .with_context(|| format!("enumerating folder {maildir_name}"))?;
+            tracing::info!(folder = %maildir_name, count = msgs.len(), "enumerated folder");
             Ok::<_, anyhow::Error>(msgs)
         }
     }))
@@ -151,14 +200,20 @@ async fn enumerate_remote(
 
     let results: Vec<Result<Vec<RemoteMessage>>> = stream.collect().await;
     let mut out: HashMap<String, RemoteMessage> = HashMap::new();
+    let mut errors: Vec<anyhow::Error> = Vec::new();
     for r in results {
-        for m in r? {
-            if out.insert(m.message_id.clone(), m).is_some() {
-                tracing::warn!("duplicate message_id seen across folders; last folder wins");
+        match r {
+            Ok(msgs) => {
+                for m in msgs {
+                    if out.insert(m.message_id.clone(), m).is_some() {
+                        tracing::warn!("duplicate message_id seen across folders; last folder wins");
+                    }
+                }
             }
+            Err(e) => errors.push(e),
         }
     }
-    Ok(out)
+    (out, errors)
 }
 
 fn flags_from_remote(m: &RemoteMessage) -> Flags {
@@ -192,7 +247,11 @@ async fn apply_fetches(
             let bytes = fetch_original_message(&client, &account_id, &mid)
                 .await
                 .with_context(|| format!("fetching message {mid}"))?;
-            maildir::write_message(&data_dir, &maildir_name, &mid, flags, &bytes)?;
+            tokio::task::spawn_blocking(move || {
+                maildir::write_message(&data_dir, &maildir_name, &mid, flags, &bytes)
+            })
+            .await
+            .context("write_message task panicked")??;
             Ok::<_, anyhow::Error>(())
         });
     }

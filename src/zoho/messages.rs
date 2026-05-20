@@ -36,7 +36,7 @@ pub async fn list_folder_messages(
 ) -> Result<Vec<RemoteMessage>> {
     let mut out = Vec::new();
     let mut start: u32 = 1;
-    let page_limit = client.page_limit().max(1);
+    let page_limit = client.message_list_page_size().max(1);
     loop {
         let url = format!(
             "{}/accounts/{account_id}/messages/view?folderId={folder_id}&start={start}&limit={page_limit}&sortBy=date&sortorder=false",
