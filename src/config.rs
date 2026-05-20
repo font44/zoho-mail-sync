@@ -2,14 +2,6 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_FETCH_PARALLELISM: usize = 8;
-pub const DEFAULT_MAX_CONCURRENT: usize = 8;
-pub const DEFAULT_RATE_LIMIT_RPS: u32 = 10;
-pub const DEFAULT_RATE_LIMIT_BURST: u32 = 20;
-pub const DEFAULT_MAX_RETRIES: u32 = 5;
-pub const DEFAULT_BASE_BACKOFF_MS: u64 = 250;
-pub const DEFAULT_PAGE_LIMIT: u32 = 200;
-
 const ENV_CLIENT_ID: &str = "ZOHO_CLIENT_ID";
 const ENV_CLIENT_SECRET: &str = "ZOHO_CLIENT_SECRET";
 
@@ -22,58 +14,61 @@ pub struct Config {
     #[serde(default = "default_api_url")]
     pub api_url: String,
     #[serde(default)]
-    pub concurrency: ConcurrencyConfig,
+    pub concurrency: Concurrency,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ConcurrencyConfig {
-    #[serde(default)]
-    pub fetch_parallelism: Option<usize>,
-    #[serde(default)]
-    pub max_concurrent: Option<usize>,
-    #[serde(default)]
-    pub rate_limit_rps: Option<u32>,
-    #[serde(default)]
-    pub rate_limit_burst: Option<u32>,
-    #[serde(default)]
-    pub max_retries: Option<u32>,
-    #[serde(default)]
-    pub base_backoff_ms: Option<u64>,
-    #[serde(default)]
-    pub page_limit: Option<u32>,
+#[derive(Debug, Clone, Deserialize)]
+pub struct Concurrency {
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: usize,
+    #[serde(default = "default_rate_limit_rps")]
+    pub rate_limit_rps: u32,
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u32,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_base_backoff_ms")]
+    pub base_backoff_ms: u64,
+    #[serde(default = "default_page_limit")]
+    pub page_limit: u32,
+}
+
+impl Default for Concurrency {
+    fn default() -> Self {
+        Self {
+            max_concurrent: default_max_concurrent(),
+            rate_limit_rps: default_rate_limit_rps(),
+            rate_limit_burst: default_rate_limit_burst(),
+            max_retries: default_max_retries(),
+            base_backoff_ms: default_base_backoff_ms(),
+            page_limit: default_page_limit(),
+        }
+    }
 }
 
 fn default_accounts_url() -> String {
     "https://accounts.zoho.com".to_string()
 }
-
 fn default_api_url() -> String {
     "https://mail.zoho.com".to_string()
 }
-
-#[derive(Debug, Clone)]
-pub struct Concurrency {
-    pub fetch_parallelism: usize,
-    pub max_concurrent: usize,
-    pub rate_limit_rps: u32,
-    pub rate_limit_burst: u32,
-    pub max_retries: u32,
-    pub base_backoff_ms: u64,
-    pub page_limit: u32,
+fn default_max_concurrent() -> usize {
+    8
 }
-
-impl Concurrency {
-    fn from_config(c: &ConcurrencyConfig) -> Self {
-        Self {
-            fetch_parallelism: c.fetch_parallelism.unwrap_or(DEFAULT_FETCH_PARALLELISM),
-            max_concurrent: c.max_concurrent.unwrap_or(DEFAULT_MAX_CONCURRENT),
-            rate_limit_rps: c.rate_limit_rps.unwrap_or(DEFAULT_RATE_LIMIT_RPS),
-            rate_limit_burst: c.rate_limit_burst.unwrap_or(DEFAULT_RATE_LIMIT_BURST),
-            max_retries: c.max_retries.unwrap_or(DEFAULT_MAX_RETRIES),
-            base_backoff_ms: c.base_backoff_ms.unwrap_or(DEFAULT_BASE_BACKOFF_MS),
-            page_limit: c.page_limit.unwrap_or(DEFAULT_PAGE_LIMIT),
-        }
-    }
+fn default_rate_limit_rps() -> u32 {
+    10
+}
+fn default_rate_limit_burst() -> u32 {
+    20
+}
+fn default_max_retries() -> u32 {
+    5
+}
+fn default_base_backoff_ms() -> u64 {
+    250
+}
+fn default_page_limit() -> u32 {
+    200
 }
 
 #[derive(Debug, Clone)]
@@ -87,16 +82,12 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
-    pub fn accounts_host(&self) -> &str {
-        self.accounts_url.trim_end_matches('/')
-    }
-
-    pub fn api_host(&self) -> &str {
-        self.api_url.trim_end_matches('/')
-    }
-
     pub fn token_url(&self) -> String {
-        format!("{}/oauth/v2/token", self.accounts_host())
+        format!("{}/oauth/v2/token", self.accounts_url)
+    }
+
+    pub fn api_base(&self) -> String {
+        format!("{}/api", self.api_url)
     }
 
     pub fn state_dir(&self) -> PathBuf {
@@ -119,9 +110,9 @@ pub fn load(config_path: Option<&Path>, data_dir_override: Option<&Path>) -> Res
         client_id,
         client_secret,
         data_dir,
-        accounts_url: cfg.accounts_url,
-        api_url: cfg.api_url,
-        concurrency: Concurrency::from_config(&cfg.concurrency),
+        accounts_url: cfg.accounts_url.trim_end_matches('/').to_string(),
+        api_url: cfg.api_url.trim_end_matches('/').to_string(),
+        concurrency: cfg.concurrency,
     })
 }
 

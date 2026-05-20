@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,9 +10,6 @@ pub struct Tokens {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
     pub account_id: Option<String>,
-    #[serde(default)]
-    pub folder_map: BTreeMap<String, String>,
-    pub last_sync_unix: Option<u64>,
 }
 
 pub fn tokens_path(state_dir: &Path) -> PathBuf {

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -12,19 +12,22 @@ struct AccountsEnvelope {
 #[derive(Debug, Deserialize)]
 struct AccountEntry {
     #[serde(rename = "accountId")]
-    account_id: serde_json::Value,
+    account_id: String,
+}
+
+pub async fn list_account_ids(client: &Client) -> Result<Vec<String>> {
+    let url = format!("{}/accounts", client.api_base());
+    let env: AccountsEnvelope = client.get_json(&url).await?;
+    Ok(env.data.into_iter().map(|e| e.account_id).collect())
 }
 
 pub async fn discover_account_id(client: &Client) -> Result<String> {
     let url = format!("{}/accounts", client.api_base());
-    let env: AccountsEnvelope = client.get_json(&url).await?;
-    let entry = env
-        .data
+    list_account_ids(client)
+        .await?
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow!("no accounts returned by {url}"))?;
-    json_value_to_string(&entry.account_id)
-        .ok_or_else(|| anyhow!("accountId was neither string nor number"))
+        .ok_or_else(|| anyhow!("no accounts returned by {url}"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,19 +38,16 @@ struct FoldersEnvelope {
 #[derive(Debug, Deserialize)]
 struct FolderEntry {
     #[serde(rename = "folderId")]
-    folder_id: serde_json::Value,
+    folder_id: String,
     #[serde(rename = "folderName")]
     folder_name: String,
     #[serde(default, rename = "parentFolderId")]
-    parent_folder_id: Option<serde_json::Value>,
-    #[serde(default, rename = "folderType")]
-    folder_type: Option<String>,
+    parent_folder_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Folder {
     pub folder_id: String,
-    pub folder_type: Option<String>,
     pub maildir_name: String,
 }
 
@@ -57,37 +57,25 @@ pub async fn list_folders(client: &Client, account_id: &str) -> Result<Vec<Folde
         .get_json(&url)
         .await
         .with_context(|| format!("listing folders from {url}"))?;
-    let raw: Vec<(String, String, Option<String>, Option<String>)> = env
+    let raw: Vec<(String, String, Option<String>)> = env
         .data
         .into_iter()
-        .filter_map(|f| {
-            let fid = json_value_to_string(&f.folder_id)?;
-            let parent = f.parent_folder_id.as_ref().and_then(json_value_to_string);
-            let parent = parent.filter(|s| !s.is_empty() && s != "0");
-            Some((fid, f.folder_name, parent, f.folder_type))
+        .map(|f| {
+            let parent = f.parent_folder_id.filter(|s| !s.is_empty() && s != "0");
+            (f.folder_id, f.folder_name, parent)
         })
         .collect();
     Ok(derive_maildir_names(raw))
 }
 
-fn json_value_to_string(v: &serde_json::Value) -> Option<String> {
-    match v {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-fn derive_maildir_names(
-    raw: Vec<(String, String, Option<String>, Option<String>)>,
-) -> Vec<Folder> {
-    let by_id: HashMap<String, (String, Option<String>, Option<String>)> = raw
+fn derive_maildir_names(raw: Vec<(String, String, Option<String>)>) -> Vec<Folder> {
+    let by_id: HashMap<String, (String, Option<String>)> = raw
         .iter()
-        .map(|(fid, name, parent, ftype)| (fid.clone(), (name.clone(), parent.clone(), ftype.clone())))
+        .map(|(fid, name, parent)| (fid.clone(), (name.clone(), parent.clone())))
         .collect();
 
     raw.iter()
-        .map(|(fid, name, parent, ftype)| {
+        .map(|(fid, name, parent)| {
             let mut chain: Vec<String> = vec![sanitize(name)];
             let mut cur_parent = parent.clone();
             let mut depth = 0;
@@ -95,7 +83,7 @@ fn derive_maildir_names(
                 if depth > 32 {
                     break;
                 }
-                if let Some((pname, pparent, _)) = by_id.get(&pid) {
+                if let Some((pname, pparent)) = by_id.get(&pid) {
                     chain.push(sanitize(pname));
                     cur_parent = pparent.clone();
                 } else {
@@ -107,7 +95,6 @@ fn derive_maildir_names(
             let maildir_name = format!(".{}", chain.join("."));
             Folder {
                 folder_id: fid.clone(),
-                folder_type: ftype.clone(),
                 maildir_name,
             }
         })
@@ -128,4 +115,3 @@ fn sanitize(name: &str) -> String {
     }
     out
 }
-

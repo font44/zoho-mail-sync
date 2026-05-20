@@ -4,6 +4,8 @@ A Unix-style CLI that mirrors a Zoho Mail account to a local Maildir.
 
 The result is plain `.eml` files on disk that any UNIX mail client — `mutt`, `neomutt`, `mu`, `notmuch`, `aerc`, `mblaze` — can read directly. One-way only: changes on Zoho propagate down; the local copy is read-only in practice (anything you delete locally comes back on the next sync).
 
+This is not a backup tool on its own — it produces a live mirror that follows deletions on Zoho. Point any backup tool you already use (`restic`, `borg`, `rsnapshot`, Time Machine, etc.) at the data directory to retain history.
+
 ## Install
 
 Built and distributed as a Nix flake. Requires a working [Nix](https://nixos.org/download/) install with flakes enabled.

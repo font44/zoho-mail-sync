@@ -12,11 +12,11 @@ struct MessagesEnvelope {
 #[derive(Debug, Deserialize)]
 struct MessageEntry {
     #[serde(rename = "messageId")]
-    message_id: serde_json::Value,
+    message_id: String,
     #[serde(rename = "folderId")]
-    folder_id: serde_json::Value,
+    folder_id: String,
     #[serde(default)]
-    status: Option<serde_json::Value>,
+    status: Option<String>,
     #[serde(default)]
     flagid: Option<String>,
 }
@@ -48,28 +48,11 @@ pub async fn list_folder_messages(
             .with_context(|| format!("listing messages from {url}"))?;
         let len = env.data.len();
         for m in env.data {
-            let message_id = match value_to_string(&m.message_id) {
-                Some(s) => s,
-                None => continue,
-            };
-            let folder_id = match value_to_string(&m.folder_id) {
-                Some(s) => s,
-                None => continue,
-            };
-            let read = m
-                .status
-                .as_ref()
-                .and_then(value_to_string)
-                .map(|s| s == "1")
-                .unwrap_or(false);
-            let important = m
-                .flagid
-                .as_deref()
-                .map(|s| s == "important")
-                .unwrap_or(false);
+            let read = m.status.as_deref() == Some("1");
+            let important = m.flagid.as_deref() == Some("important");
             out.push(RemoteMessage {
-                message_id,
-                folder_id,
+                message_id: m.message_id,
+                folder_id: m.folder_id,
                 read,
                 important,
             });
@@ -109,12 +92,3 @@ pub async fn fetch_original_message(
         .with_context(|| format!("fetching original message from {url}"))?;
     Ok(env.data.content.into_bytes())
 }
-
-fn value_to_string(v: &serde_json::Value) -> Option<String> {
-    match v {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-

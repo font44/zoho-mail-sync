@@ -1,17 +1,15 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::stream::{FuturesUnordered, StreamExt};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use crate::config::ResolvedConfig;
 use crate::maildir::{self, Flags};
 use crate::state;
 use crate::zoho::{
-    folders::{discover_account_id, list_folders, Folder},
-    messages::{fetch_original_message, list_folder_messages, RemoteMessage},
     Client,
+    folders::{Folder, discover_account_id, list_account_ids, list_folders},
+    messages::{RemoteMessage, fetch_original_message, list_folder_messages},
 };
 
 pub async fn run(cfg: ResolvedConfig) -> Result<()> {
@@ -19,22 +17,12 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
     let client = Arc::new(Client::new(cfg.clone()).await?);
     let mut meta = state::load_meta(&cfg.state_dir())?;
 
-    let account_id = match meta.account_id.clone() {
-        Some(id) => id,
-        None => {
-            let id = discover_account_id(&client).await?;
-            meta.account_id = Some(id.clone());
-            state::save_meta(&cfg.state_dir(), &meta)?;
-            id
-        }
-    };
+    let account_id = resolve_account_id(&client, &mut meta, &cfg).await?;
     tracing::info!(account_id = %account_id, "using Zoho account");
 
     let folders = list_folders(&client, &account_id).await?;
     tracing::info!(count = folders.len(), "listed remote folders");
-    meta.folder_map.clear();
     for f in &folders {
-        meta.folder_map.insert(f.folder_id.clone(), f.maildir_name.clone());
         maildir::ensure_folder(&cfg.data_dir, &f.maildir_name)?;
     }
 
@@ -48,218 +36,189 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
         .iter()
         .map(|f| (f.folder_id.clone(), f.maildir_name.clone()))
         .collect();
-    let folder_type_map: HashMap<String, Option<String>> = folders
-        .iter()
-        .map(|f| (f.folder_id.clone(), f.folder_type.clone()))
-        .collect();
 
+    let mut errors: Vec<anyhow::Error> = Vec::new();
     let mut to_fetch: Vec<(String, String, Flags)> = Vec::new();
-    let mut to_set_flags: Vec<(String, String, Flags)> = Vec::new();
-    let mut to_move: Vec<(String, String, String, Flags)> = Vec::new();
-    let mut to_delete: Vec<(String, String)> = Vec::new();
 
     for (mid, rmsg) in &remote {
-        let target_folder_id = &rmsg.folder_id;
-        let target_maildir_name = match folder_id_to_maildir.get(target_folder_id) {
+        let target = match folder_id_to_maildir.get(&rmsg.folder_id) {
             Some(n) => n.clone(),
             None => {
                 tracing::warn!(
-                    folder_id = %target_folder_id,
+                    folder_id = %rmsg.folder_id,
                     message_id = %mid,
                     "remote message in unknown folder; skipping"
                 );
                 continue;
             }
         };
-        let ftype = folder_type_map
-            .get(target_folder_id)
-            .cloned()
-            .flatten();
-        let flags = flags_from_remote(rmsg, ftype.as_deref());
+        let flags = flags_from_remote(rmsg);
         match local.get(mid) {
-            None => {
-                to_fetch.push((mid.clone(), target_maildir_name, flags));
-            }
-            Some(le) => {
-                if le.maildir_name != target_maildir_name {
-                    to_move.push((le.maildir_name.clone(), target_maildir_name, mid.clone(), flags));
-                } else if le.flags != flags {
-                    to_set_flags.push((target_maildir_name, mid.clone(), flags));
+            None => to_fetch.push((mid.clone(), target, flags)),
+            Some(le) if le.maildir_name != target => {
+                if let Err(e) =
+                    maildir::move_to_folder(&cfg.data_dir, &le.maildir_name, &target, mid, flags)
+                {
+                    errors.push(e);
                 }
             }
+            Some(le) if le.flags != flags => {
+                if let Err(e) = maildir::set_flags(&cfg.data_dir, &target, mid, flags) {
+                    errors.push(e);
+                }
+            }
+            Some(_) => {}
         }
     }
 
     for (mid, le) in &local {
-        if !remote.contains_key(mid) {
-            to_delete.push((le.maildir_name.clone(), mid.clone()));
+        if !remote.contains_key(mid)
+            && let Err(e) = maildir::delete(&cfg.data_dir, &le.maildir_name, mid)
+        {
+            errors.push(e);
         }
     }
 
-    tracing::info!(
-        new = to_fetch.len(),
-        flag_changes = to_set_flags.len(),
-        moves = to_move.len(),
-        deletes = to_delete.len(),
-        "diff complete"
-    );
+    let fetch_count = to_fetch.len();
+    tracing::info!(new = fetch_count, "starting fetches");
+    let fetch_errors = apply_fetches(client.clone(), &account_id, &cfg.data_dir, to_fetch).await;
+    let fetch_failed = fetch_errors.len();
+    errors.extend(fetch_errors);
 
-    apply_flag_changes(&cfg.data_dir, &to_set_flags)?;
-    apply_moves(&cfg.data_dir, &to_move)?;
-    apply_fetches(
-        client.clone(),
-        &account_id,
-        &cfg.data_dir,
-        cfg.concurrency.fetch_parallelism,
-        &to_fetch,
-    )
-    .await?;
-    apply_deletes(&cfg.data_dir, &to_delete)?;
+    let stale_errors = cleanup_stale_dirs(&cfg.data_dir, &folders)?;
+    let stale_failed = stale_errors.len();
+    errors.extend(stale_errors);
 
-    meta.last_sync_unix = Some(unix_now());
     state::save_meta(&cfg.state_dir(), &meta)?;
+
+    if !errors.is_empty() {
+        for e in &errors {
+            tracing::error!("{e:#}");
+        }
+        anyhow::bail!(
+            "{} operation(s) failed ({} fetch, {} stale-dir, {} other)",
+            errors.len(),
+            fetch_failed,
+            stale_failed,
+            errors.len() - fetch_failed - stale_failed
+        );
+    }
     tracing::info!("sync complete");
     Ok(())
 }
 
-async fn enumerate_remote(
+async fn resolve_account_id(
     client: &Client,
+    meta: &mut state::Meta,
+    cfg: &ResolvedConfig,
+) -> Result<String> {
+    match meta.account_id.clone() {
+        Some(saved) => {
+            let ids = list_account_ids(client).await?;
+            if !ids.iter().any(|id| id == &saved) {
+                return Err(anyhow!(
+                    "saved account_id {saved} not present in Zoho /accounts response (got {ids:?}); \
+                     the account was deleted or revoked, or your tokens are for a different user"
+                ));
+            }
+            Ok(saved)
+        }
+        None => {
+            let id = discover_account_id(client).await?;
+            meta.account_id = Some(id.clone());
+            state::save_meta(&cfg.state_dir(), meta)?;
+            Ok(id)
+        }
+    }
+}
+
+async fn enumerate_remote(
+    client: &Arc<Client>,
     account_id: &str,
     folders: &[Folder],
 ) -> Result<HashMap<String, RemoteMessage>> {
+    let parallelism = client.max_concurrent();
+    let stream = futures::stream::iter(folders.iter().map(|f| {
+        let client = client.clone();
+        let account_id = account_id.to_string();
+        async move {
+            let msgs = list_folder_messages(&client, &account_id, &f.folder_id).await?;
+            tracing::info!(folder = %f.maildir_name, count = msgs.len(), "enumerated folder");
+            Ok::<_, anyhow::Error>(msgs)
+        }
+    }))
+    .buffer_unordered(parallelism);
+
+    let results: Vec<Result<Vec<RemoteMessage>>> = stream.collect().await;
     let mut out: HashMap<String, RemoteMessage> = HashMap::new();
-    for f in folders {
-        let msgs = list_folder_messages(client, account_id, &f.folder_id).await?;
-        tracing::info!(folder = %f.maildir_name, count = msgs.len(), "enumerated folder");
-        for m in msgs {
-            out.insert(m.message_id.clone(), m);
+    for r in results {
+        for m in r? {
+            if out.insert(m.message_id.clone(), m).is_some() {
+                tracing::warn!("duplicate message_id seen across folders; last folder wins");
+            }
         }
     }
     Ok(out)
 }
 
-fn flags_from_remote(m: &RemoteMessage, folder_type: Option<&str>) -> Flags {
-    let ftype_lc = folder_type.map(|s| s.to_lowercase());
-    let in_drafts = matches!(ftype_lc.as_deref(), Some("drafts"));
-    let in_trash = matches!(ftype_lc.as_deref(), Some("trash"));
+fn flags_from_remote(m: &RemoteMessage) -> Flags {
     Flags {
         seen: m.read,
         flagged: m.important,
-        draft: in_drafts,
-        trashed: in_trash,
     }
-}
-
-fn apply_flag_changes(data_dir: &std::path::Path, items: &[(String, String, Flags)]) -> Result<()> {
-    for (folder, mid, flags) in items {
-        maildir::set_flags(data_dir, folder, mid, *flags)?;
-    }
-    Ok(())
-}
-
-fn apply_moves(
-    data_dir: &std::path::Path,
-    items: &[(String, String, String, Flags)],
-) -> Result<()> {
-    for (from, to, mid, flags) in items {
-        maildir::move_to_folder(data_dir, from, to, mid, *flags)?;
-    }
-    Ok(())
 }
 
 async fn apply_fetches(
     client: Arc<Client>,
     account_id: &str,
     data_dir: &std::path::Path,
-    parallelism: usize,
-    items: &[(String, String, Flags)],
-) -> Result<()> {
+    items: Vec<(String, String, Flags)>,
+) -> Vec<anyhow::Error> {
+    let mut errors = Vec::new();
     if items.is_empty() {
-        return Ok(());
+        return errors;
     }
-    let parallelism = parallelism.max(1);
     let pb = indicatif::ProgressBar::new(items.len() as u64);
     pb.set_style(
-        indicatif::ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}")
-            .unwrap(),
+        indicatif::ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}").unwrap(),
     );
 
     let mut futures = FuturesUnordered::new();
-    let mut iter = items.iter();
-    let mut in_flight = 0usize;
-    let mut errors: Vec<anyhow::Error> = Vec::new();
-
-    loop {
-        while in_flight < parallelism {
-            match iter.next() {
-                Some((mid, maildir_name, flags)) => {
-                    let client = client.clone();
-                    let mid = mid.clone();
-                    let maildir_name = maildir_name.clone();
-                    let flags = *flags;
-                    let account_id = account_id.to_string();
-                    let data_dir = data_dir.to_path_buf();
-                    futures.push(tokio::spawn(async move {
-                        fetch_one(client, account_id, mid, data_dir, maildir_name, flags).await
-                    }));
-                    in_flight += 1;
-                }
-                None => break,
-            }
-        }
-        if in_flight == 0 {
-            break;
-        }
-        if let Some(joined) = futures.next().await {
-            in_flight -= 1;
-            match joined {
-                Ok(Ok(())) => pb.inc(1),
-                Ok(Err(e)) => {
-                    pb.inc(1);
-                    errors.push(e);
-                }
-                Err(e) => {
-                    pb.inc(1);
-                    errors.push(anyhow::anyhow!("join error: {e}"));
-                }
-            }
+    for (mid, maildir_name, flags) in items {
+        let client = client.clone();
+        let account_id = account_id.to_string();
+        let data_dir = data_dir.to_path_buf();
+        futures.push(async move {
+            let bytes = fetch_original_message(&client, &account_id, &mid)
+                .await
+                .with_context(|| format!("fetching message {mid}"))?;
+            maildir::write_message(&data_dir, &maildir_name, &mid, flags, &bytes)?;
+            Ok::<_, anyhow::Error>(())
+        });
+    }
+    while let Some(res) = futures.next().await {
+        pb.inc(1);
+        if let Err(e) = res {
+            errors.push(e);
         }
     }
     pb.finish_with_message("done");
-    if !errors.is_empty() {
-        for e in &errors {
-            tracing::error!("{e:#}");
+    errors
+}
+
+fn cleanup_stale_dirs(data_dir: &std::path::Path, folders: &[Folder]) -> Result<Vec<anyhow::Error>> {
+    let active: HashSet<&str> = folders.iter().map(|f| f.maildir_name.as_str()).collect();
+    let local_folders = maildir::list_local_folders(data_dir)?;
+    let mut errors = Vec::new();
+    for name in local_folders {
+        if active.contains(name.as_str()) {
+            continue;
         }
-        anyhow::bail!("{} message fetches failed", errors.len());
+        match maildir::rmdir_if_empty(data_dir, &name) {
+            Ok(true) => tracing::info!(folder = %name, "removed stale empty maildir"),
+            Ok(false) => tracing::warn!(folder = %name, "stale maildir not empty; leaving in place"),
+            Err(e) => errors.push(e),
+        }
     }
-    Ok(())
-}
-
-async fn fetch_one(
-    client: Arc<Client>,
-    account_id: String,
-    message_id: String,
-    data_dir: PathBuf,
-    maildir_name: String,
-    flags: Flags,
-) -> Result<()> {
-    let bytes = fetch_original_message(&client, &account_id, &message_id)
-        .await
-        .with_context(|| format!("fetching message {message_id}"))?;
-    maildir::write_message(&data_dir, &maildir_name, &message_id, flags, &bytes)?;
-    Ok(())
-}
-
-fn apply_deletes(data_dir: &std::path::Path, items: &[(String, String)]) -> Result<()> {
-    for (folder, mid) in items {
-        maildir::delete(data_dir, folder, mid)?;
-    }
-    Ok(())
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    Ok(errors)
 }

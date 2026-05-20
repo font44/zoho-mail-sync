@@ -1,30 +1,24 @@
 use anyhow::{Context, Result};
 use maildir::Maildir;
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags {
     pub seen: bool,
     pub flagged: bool,
-    pub draft: bool,
-    pub trashed: bool,
 }
 
 impl Flags {
     pub fn encode(&self) -> String {
         let mut s = String::new();
-        if self.draft {
-            s.push('D');
-        }
         if self.flagged {
             s.push('F');
         }
         if self.seen {
             s.push('S');
-        }
-        if self.trashed {
-            s.push('T');
         }
         s
     }
@@ -33,8 +27,6 @@ impl Flags {
         Flags {
             seen: s.contains('S'),
             flagged: s.contains('F'),
-            draft: s.contains('D'),
-            trashed: s.contains('T'),
         }
     }
 }
@@ -77,19 +69,22 @@ pub fn scan_data_dir(data_dir: &Path) -> Result<HashMap<String, LocalEntry>> {
         if !folder_path.is_dir() {
             continue;
         }
-        let md = Maildir::from(folder_path);
+        let md = Maildir::from(folder_path.clone());
         for mail in md.list_cur().chain(md.list_new()) {
-            let mail = match mail {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            out.insert(
-                mail.id().to_string(),
-                LocalEntry {
-                    maildir_name: name_str.to_string(),
-                    flags: Flags::decode(mail.flags()),
-                },
-            );
+            match mail {
+                Ok(m) => {
+                    out.insert(
+                        m.id().to_string(),
+                        LocalEntry {
+                            maildir_name: name_str.to_string(),
+                            flags: Flags::decode(m.flags()),
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(folder = %folder_path.display(), "skipping unparseable maildir entry: {e}");
+                }
+            }
         }
     }
     Ok(out)
@@ -103,22 +98,25 @@ pub fn write_message(
     body: &[u8],
 ) -> Result<()> {
     let folder = data_dir.join(maildir_name);
-    let md = Maildir::from(folder.clone());
-    let auto_id = md
-        .store_cur_with_flags(body, &flags.encode())
-        .map_err(|e| anyhow::anyhow!("storing message {message_id}: {e}"))?;
-    let auto_entry = md
-        .find(&auto_id)
-        .ok_or_else(|| anyhow::anyhow!("just-stored message {auto_id} disappeared"))?;
-    let parent = auto_entry
-        .path()
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("no parent for stored message"))?
-        .to_path_buf();
-    let separator = info_suffix_separator();
-    let target = parent.join(format!("{message_id}{separator}2,{}", flags.encode()));
-    std::fs::rename(auto_entry.path(), &target)
-        .with_context(|| format!("renaming {} -> {}", auto_entry.path().display(), target.display()))?;
+    let tmp = folder.join("tmp").join(message_id);
+    let cur = folder
+        .join("cur")
+        .join(format!("{message_id}{}2,{}", info_suffix_separator(), flags.encode()));
+
+    {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp)
+            .with_context(|| format!("opening {}", tmp.display()))?;
+        f.write_all(body)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("fsync {}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, &cur)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), cur.display()))?;
     Ok(())
 }
 
@@ -158,4 +156,69 @@ pub fn delete(data_dir: &Path, maildir_name: &str, message_id: &str) -> Result<(
     let md = Maildir::from(folder);
     md.delete(message_id)
         .with_context(|| format!("deleting {message_id} from {maildir_name}"))
+}
+
+pub fn rmdir_if_empty(data_dir: &Path, maildir_name: &str) -> Result<bool> {
+    let folder = data_dir.join(maildir_name);
+    if !folder.is_dir() {
+        return Ok(false);
+    }
+    for sub in ["cur", "new", "tmp"] {
+        let p = folder.join(sub);
+        if p.is_dir() {
+            let mut iter = std::fs::read_dir(&p)
+                .with_context(|| format!("reading {}", p.display()))?;
+            if iter.next().is_some() {
+                return Ok(false);
+            }
+        }
+    }
+    for e in std::fs::read_dir(&folder)
+        .with_context(|| format!("reading {}", folder.display()))?
+    {
+        let e = e?;
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if n != "cur" && n != "new" && n != "tmp" {
+            return Ok(false);
+        }
+    }
+    for sub in ["cur", "new", "tmp"] {
+        let p = folder.join(sub);
+        if p.is_dir() {
+            std::fs::remove_dir(&p)
+                .with_context(|| format!("rmdir {}", p.display()))?;
+        }
+    }
+    std::fs::remove_dir(&folder)
+        .with_context(|| format!("rmdir {}", folder.display()))?;
+    Ok(true)
+}
+
+pub fn list_local_folders(data_dir: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    if !data_dir.exists() {
+        return Ok(out);
+    }
+    for entry in std::fs::read_dir(data_dir)
+        .with_context(|| format!("reading {}", data_dir.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if !name_str.starts_with('.') || name_str == "." || name_str == ".." {
+            continue;
+        }
+        if name_str == ".zoho-mail-sync" {
+            continue;
+        }
+        if !entry.path().is_dir() {
+            continue;
+        }
+        out.push(name_str);
+    }
+    Ok(out)
 }

@@ -7,7 +7,6 @@
 # api_url      = "https://mail.zoho.com"
 
 # [concurrency]
-# fetch_parallelism = 8     # parallel message-body downloads during sync
 # max_concurrent    = 8     # max in-flight Zoho API requests
 # rate_limit_rps    = 10    # token-bucket steady-state requests/sec
 # rate_limit_burst  = 20    # token-bucket burst size

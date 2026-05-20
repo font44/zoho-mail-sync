@@ -11,6 +11,7 @@ const ZOHO_SCOPES: &str =
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: Option<String>,
+    #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
     error: Option<String>,
@@ -72,9 +73,6 @@ pub async fn run_auth(cfg: &ResolvedConfig, code_arg: Option<&str>) -> Result<()
     let refresh_token = parsed
         .refresh_token
         .ok_or_else(|| anyhow!("no refresh_token in response (body: {body})"))?;
-    if parsed.access_token.is_none() {
-        return Err(anyhow!("no access_token in response (body: {body})"));
-    }
 
     let tokens = Tokens { refresh_token };
     ensure_state_dir(&cfg.state_dir())?;
