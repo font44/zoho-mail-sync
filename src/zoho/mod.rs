@@ -8,7 +8,7 @@ use governor::{
     middleware::NoOpMiddleware,
     state::{InMemoryState, NotKeyed},
 };
-use rand::Rng;
+use rand::RngExt;
 use reqwest::{Method, Response, StatusCode};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -191,7 +191,7 @@ async fn handle_response(resp: reqwest::Result<Response>) -> ResponseOutcome {
 
 fn backoff_for(base_ms: u64, attempt: u32) -> Duration {
     let exp = base_ms.saturating_mul(1 << attempt.min(5));
-    let factor: f64 = rand::thread_rng().gen_range(0.5..1.5);
+    let factor: f64 = rand::rng().random_range(0.5..1.5);
     let jittered = (exp as f64 * factor) as u64;
     Duration::from_millis(jittered.max(1))
 }
