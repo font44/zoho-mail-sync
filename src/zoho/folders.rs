@@ -115,3 +115,31 @@ fn sanitize(name: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitizes_maildir_unsafe_characters() {
+        assert_eq!(sanitize("A/B.C\\D:E\n"), "A_B_C_D_E_");
+        assert_eq!(sanitize(""), "_");
+        assert_eq!(sanitize("Inbox 📬"), "Inbox 📬");
+    }
+
+    #[test]
+    fn derives_nested_and_orphaned_maildir_names() {
+        let folders = derive_maildir_names(vec![
+            ("1".into(), "Projects".into(), None),
+            ("2".into(), "2026/Q3".into(), Some("1".into())),
+            ("3".into(), "Orphan".into(), Some("missing".into())),
+        ]);
+
+        assert_eq!(folders[0].folder_id, "1");
+        assert_eq!(folders[0].maildir_name, ".Projects");
+        assert_eq!(folders[1].folder_id, "2");
+        assert_eq!(folders[1].maildir_name, ".Projects.2026_Q3");
+        assert_eq!(folders[2].folder_id, "3");
+        assert_eq!(folders[2].maildir_name, ".Orphan");
+    }
+}

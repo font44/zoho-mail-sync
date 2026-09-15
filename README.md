@@ -8,20 +8,27 @@ This is not a backup tool on its own — it produces a live mirror that follows 
 
 ## Install
 
-Built and distributed as a Nix flake. Requires a working [Nix](https://nixos.org/download/) install with flakes enabled.
+Linux x86_64 tarballs are published on the [GitHub Releases page](https://github.com/font44/zoho-mail-sync/releases). To install from source, use [Nix](https://nixos.org/download/) with flakes enabled and devenv:
 
 ```sh
-nix profile add github:font44/zoho-mail-sync
+nix profile add github:cachix/devenv/v2.3.1
+git clone https://github.com/font44/zoho-mail-sync.git
+cd zoho-mail-sync
+devenv shell cargo install --locked --path .
 ```
 
 ## First-time setup
 
 1. Visit <https://api-console.zoho.com/> and create a **Self Client**. Copy the client ID and secret.
-2. Export them in your shell, `.envrc`, or systemd `EnvironmentFile`:
+2. For local use, copy the checked-in dummy environment to the ignored local override and replace both values:
    ```sh
-   export ZOHO_CLIENT_ID=1000.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-   export ZOHO_CLIENT_SECRET=0123456789abcdef...
+   cp .env .env.local
    ```
+   ```dotenv
+   ZOHO_CLIENT_ID=1000.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+   ZOHO_CLIENT_SECRET=0123456789abcdef...
+   ```
+   Devenv loads `.env` as non-secret defaults and loads `.env.local` at shell activation so the local values win without being copied into the Nix store. Never put real credentials in the checked-in `.env`. For systemd, set the same variables through `EnvironmentFile`.
 3. (Optional) Copy `zoho-mail-sync.example.toml` to `zoho-mail-sync.toml` next to where you'll run the tool to override any of:
    - `data_dir` — where to store the Maildir. Defaults to the current working directory.
    - `accounts_url` — OAuth host. Defaults to `https://accounts.zoho.com`. Use `https://accounts.zoho.eu`, `.in`, `.com.au`, `.com.cn`, or `.jp` for other data centers.
@@ -76,11 +83,13 @@ notmuch new && notmuch search from:alice
 
 ## Contributing
 
-The repo ships an `.envrc` with `use flake`; run `direnv allow` once and the dev shell loads automatically. Without direnv, use `nix develop`.
+The repo ships an `.envrc` configured for devenv. Run `direnv allow` once and the development environment loads automatically. Without direnv, use `devenv shell`.
+
+Run `devenv test` for the same build and unit-test gate used by CI. Future integration tests belong in that gate so Renovate cannot merge without running them.
 
 ## Releases
 
-Tagging `vX.Y.Z` triggers a GitHub Actions workflow that builds the binary via `nix build` and attaches a Linux x86_64 tarball to the GitHub Release. Bump `version` in `Cargo.toml` and `flake.nix` together before tagging.
+Tagging `vX.Y.Z` triggers a GitHub Actions workflow that builds the release binary inside devenv and attaches a Linux x86_64 tarball to the GitHub Release. Bump `version` in `Cargo.toml` before tagging.
 
 ## License
 

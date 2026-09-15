@@ -39,9 +39,7 @@ impl Client {
             .timeout(Duration::from_secs(60))
             .build()
             .context("building HTTP client")?;
-        let access_token = Arc::new(Mutex::new(
-            oauth::fetch_access_token(&cfg, &http).await?,
-        ));
+        let access_token = Arc::new(Mutex::new(oauth::fetch_access_token(&cfg, &http).await?));
         let rps = NonZeroU32::new(cfg.concurrency.rate_limit_rps.max(1))
             .expect("rate_limit_rps clamped to >=1");
         let quota = Quota::per_second(rps);
@@ -71,7 +69,10 @@ impl Client {
     }
 
     pub fn num_folders_to_process_concurrently(&self) -> usize {
-        self.cfg.concurrency.num_folders_to_process_concurrently.max(1)
+        self.cfg
+            .concurrency
+            .num_folders_to_process_concurrently
+            .max(1)
     }
 
     async fn rate_limit(&self) {
@@ -120,11 +121,7 @@ impl Client {
     }
 }
 
-fn spawn_refresher(
-    cfg: ResolvedConfig,
-    http: reqwest::Client,
-    access_token: Arc<Mutex<String>>,
-) {
+fn spawn_refresher(cfg: ResolvedConfig, http: reqwest::Client, access_token: Arc<Mutex<String>>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(ACCESS_TOKEN_REFRESH_INTERVAL);
         tick.tick().await;

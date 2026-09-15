@@ -29,8 +29,8 @@ pub fn load_tokens(state_dir: &Path) -> Result<Option<Tokens>> {
     let path = tokens_path(state_dir);
     match std::fs::read_to_string(&path) {
         Ok(s) => {
-            let t = serde_json::from_str(&s)
-                .with_context(|| format!("parsing {}", path.display()))?;
+            let t =
+                serde_json::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
             Ok(Some(t))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -48,7 +48,9 @@ pub fn save_tokens(state_dir: &Path, tokens: &Tokens) -> Result<()> {
 pub fn load_meta(state_dir: &Path) -> Result<Meta> {
     let path = meta_path(state_dir);
     match std::fs::read_to_string(&path) {
-        Ok(s) => Ok(serde_json::from_str(&s).with_context(|| format!("parsing {}", path.display()))?),
+        Ok(s) => {
+            Ok(serde_json::from_str(&s).with_context(|| format!("parsing {}", path.display()))?)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Meta::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
@@ -95,4 +97,3 @@ fn write_file_secret(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
-

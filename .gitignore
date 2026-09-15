@@ -1,5 +1,9 @@
 /target
-/result
+.devenv*
 .direnv/
+.kiro/
+.env.local
+devenv.local.nix
+devenv.local.yaml
 zoho-mail-sync.toml
 *.swp

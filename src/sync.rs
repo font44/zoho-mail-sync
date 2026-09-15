@@ -62,9 +62,11 @@ pub async fn run(cfg: ResolvedConfig) -> Result<()> {
 
     let (to_fetch, mut errors) = {
         let data_dir = cfg.data_dir.clone();
-        tokio::task::spawn_blocking(move || diff_local_remote(&data_dir, &remote, &local, &folder_id_to_maildir))
-            .await
-            .context("diff task panicked")?
+        tokio::task::spawn_blocking(move || {
+            diff_local_remote(&data_dir, &remote, &local, &folder_id_to_maildir)
+        })
+        .await
+        .context("diff task panicked")?
     };
 
     let fetch_count = to_fetch.len();
@@ -206,7 +208,9 @@ async fn enumerate_remote(
             Ok(msgs) => {
                 for m in msgs {
                     if out.insert(m.message_id.clone(), m).is_some() {
-                        tracing::warn!("duplicate message_id seen across folders; last folder wins");
+                        tracing::warn!(
+                            "duplicate message_id seen across folders; last folder wins"
+                        );
                     }
                 }
             }
@@ -265,7 +269,10 @@ async fn apply_fetches(
     errors
 }
 
-fn cleanup_stale_dirs(data_dir: &std::path::Path, folders: &[Folder]) -> Result<Vec<anyhow::Error>> {
+fn cleanup_stale_dirs(
+    data_dir: &std::path::Path,
+    folders: &[Folder],
+) -> Result<Vec<anyhow::Error>> {
     let active: HashSet<&str> = folders.iter().map(|f| f.maildir_name.as_str()).collect();
     let local_folders = maildir::list_local_folders(data_dir)?;
     let mut errors = Vec::new();
@@ -275,7 +282,9 @@ fn cleanup_stale_dirs(data_dir: &std::path::Path, folders: &[Folder]) -> Result<
         }
         match maildir::rmdir_if_empty(data_dir, &name) {
             Ok(true) => tracing::info!(folder = %name, "removed stale empty maildir"),
-            Ok(false) => tracing::warn!(folder = %name, "stale maildir not empty; leaving in place"),
+            Ok(false) => {
+                tracing::warn!(folder = %name, "stale maildir not empty; leaving in place")
+            }
             Err(e) => errors.push(e),
         }
     }

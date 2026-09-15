@@ -1,12 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::io::{BufRead, Write};
 
 use crate::config::ResolvedConfig;
-use crate::state::{ensure_state_dir, load_tokens, save_tokens, Tokens};
+use crate::state::{Tokens, ensure_state_dir, load_tokens, save_tokens};
 
-const ZOHO_SCOPES: &str =
-    "ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ";
+const ZOHO_SCOPES: &str = "ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ";
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {

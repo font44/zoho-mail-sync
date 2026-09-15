@@ -4,14 +4,40 @@
     "config:recommended",
     "schedule:monthly"
   ],
-  "nix": {
-    "enabled": true
+  "timezone": "Etc/UTC",
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "ignoreTests": false,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "* 0-3 1 * *"
+    ],
+    "automerge": true
   },
   "packageRules": [
     {
       "description": "Group all Rust dependencies",
       "groupName": "all rust dependencies",
-      "matchManagers": ["cargo"]
+      "matchManagers": [
+        "cargo"
+      ]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)README\\.md$/",
+        "/(^|/)\\.github/workflows/.*\\.yml$/"
+      ],
+      "matchStrings": [
+        "github:cachix/devenv/v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "cachix/devenv",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
     }
   ]
 }

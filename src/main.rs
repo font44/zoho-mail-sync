@@ -10,7 +10,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "zoho-mail-sync", version, about = "One-way Maildir mirror of a Zoho Mail account")]
+#[command(
+    name = "zoho-mail-sync",
+    version,
+    about = "One-way Maildir mirror of a Zoho Mail account"
+)]
 struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,

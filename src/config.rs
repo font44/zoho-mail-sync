@@ -95,7 +95,10 @@ impl ResolvedConfig {
     }
 }
 
-pub fn load(config_path: Option<&Path>, data_dir_override: Option<&Path>) -> Result<ResolvedConfig> {
+pub fn load(
+    config_path: Option<&Path>,
+    data_dir_override: Option<&Path>,
+) -> Result<ResolvedConfig> {
     let cfg = read_toml(config_path)?;
 
     let client_id = require_env(ENV_CLIENT_ID)?;
@@ -131,7 +134,9 @@ fn read_toml(config_path: Option<&Path>) -> Result<Config> {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     Ok(toml::from_str("").expect("empty TOML deserializes to defaults"))
                 }
-                Err(e) => Err(e).with_context(|| format!("reading config {}", default_path.display())),
+                Err(e) => {
+                    Err(e).with_context(|| format!("reading config {}", default_path.display()))
+                }
             }
         }
     }
