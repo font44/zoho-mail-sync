@@ -11,7 +11,7 @@ This is not a backup tool on its own — it produces a live mirror that follows 
 Linux x86_64 tarballs are published on the [GitHub Releases page](https://github.com/font44/zoho-mail-sync/releases). To install from source, use [Nix](https://nixos.org/download/) with flakes enabled and devenv:
 
 ```sh
-nix profile add github:cachix/devenv/v2.3.1
+nix profile add github:cachix/devenv/v2.4.0
 git clone https://github.com/font44/zoho-mail-sync.git
 cd zoho-mail-sync
 devenv shell cargo install --locked --path .
